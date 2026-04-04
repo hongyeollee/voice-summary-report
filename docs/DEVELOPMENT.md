@@ -54,8 +54,8 @@
      [Claude Code 세션 (상시 실행)]
        ├── 음성 파일 수신 (멀티모달 오디오 이해)
        ├── 회의록 형태로 요약 생성
-       ├── 문서 생성 스크립트 호출 (PDF/DOCX/MD/TXT)
-       └── 텔레그램으로 문서 전송
+       ├── Google Docs API로 회의록 문서 생성
+       └── 텔레그램으로 Google Docs 링크 전송
 ```
 
 **핵심**: Claude Code 자체가 에이전트 역할. 별도 STT(Whisper)나 LLM 연동이 불필요.
@@ -72,7 +72,7 @@
 
 ### 필요한 것만 남기면
 
-1. **문서 생성 스크립트** - PDF/DOCX/MD/TXT 파일 생성 (Python)
+1. **Google Docs 문서 생성 스크립트** - 회의록을 Google Docs로 직접 생성 (Python)
 2. **Claude Code 커맨드/훅** - 음성 파일 수신 시 자동 처리 흐름
 3. **프롬프트 템플릿** - 회의록 형식 지정
 
@@ -84,7 +84,8 @@
 |------|------|------|
 | AI 엔진 | Claude Code (Max 구독) | STT + 요약 모두 처리, 추가 비용 없음 |
 | 텔레그램 연동 | MCP 텔레그램 플러그인 | 이미 연동 완료 |
-| 문서 생성 | Python (fpdf2, python-docx) | 한글 PDF/DOCX 생성 |
+| 문서 생성 | Google Docs API | 회의록을 Google Docs로 직접 생성 |
+| 문서 공유 | Google Drive API | 링크 공유 및 접근 권한 설정 |
 | 실행 환경 | Apple Silicon Mac (로컬) | Claude Code 세션 상시 실행 |
 | DB | 없음 | 파일 기반 저장 |
 
@@ -94,6 +95,7 @@
 
 ```
 voice-summary-report/
+├── .env.example                  # 환경변수 템플릿 (Google API 설정)
 ├── .gitignore
 ├── README.md
 ├── requirements.txt
@@ -101,26 +103,21 @@ voice-summary-report/
 │   └── DEVELOPMENT.md            # 이 문서
 │
 ├── scripts/
-│   ├── generate_doc.py           # 문서 생성 CLI 도구
-│   └── renderers/
-│       ├── __init__.py
-│       ├── pdf_renderer.py       # fpdf2 기반 PDF 생성
-│       ├── docx_renderer.py      # python-docx 기반 DOCX 생성
-│       ├── markdown_renderer.py  # Markdown 생성
-│       └── txt_renderer.py       # 텍스트 생성
+│   ├── create_meeting_doc.py     # Google Docs 회의록 생성 CLI
+│   └── google_docs_client.py     # Google Docs/Drive API 클라이언트
 │
 ├── prompts/
 │   └── meeting_minutes.md        # 회의록 프롬프트 템플릿
 │
-├── data/
-│   ├── .gitkeep
-│   └── output/                   # 생성된 문서 저장
+├── credentials/                  # Google API 인증 (gitignored)
+│   └── service_account.json
 │
-└── fonts/
-    └── NanumGothic.ttf           # 한글 PDF 렌더링용
+└── data/
+    └── .gitkeep
 ```
 
-**v2 대비 제거된 것**: `app/` 전체 (봇 서버, transcription, summarization, utils, config, models)
+**v2 대비 제거된 것**: `app/` 전체, `fonts/`, 로컬 렌더러 (PDF/DOCX/MD/TXT)
+**v1에서 추가된 것**: Google Docs/Drive API 연동, 링크 공유 기능
 
 ---
 
@@ -134,13 +131,14 @@ voice-summary-report/
    ├── 회의록 형식으로 구조화 요약
    │   (prompts/meeting_minutes.md 템플릿 기반)
    │
-   ├── 사용자에게 요약 미리보기 + 형식 선택 안내
-   │
-   └── 선택된 형식으로 문서 생성
-       ├── scripts/generate_doc.py 실행
-       └── data/output/{timestamp}_회의록.{ext} 생성
+   └── Google Docs에 회의록 문서 생성
+       ├── scripts/create_meeting_doc.py 실행
+       ├── Google Docs API로 문서 생성 (제목/불릿/테이블 스타일 적용)
+       ├── Google Drive API로 공유 권한 설정
+       └── 문서 URL 반환
 
-3. Claude Code → 텔레그램으로 생성된 문서 파일 전송
+3. Claude Code → 텔레그램으로 Google Docs 링크 전송
+   └── "회의록이 생성되었습니다: https://docs.google.com/document/d/{id}/edit"
 ```
 
 ---
@@ -176,35 +174,50 @@ voice-summary-report/
 - JSON만 반환, 추가 설명 없이
 ```
 
-### 6.2 문서 생성 스크립트
+### 6.2 Google Docs 문서 생성 스크립트
 
-`scripts/generate_doc.py` - Claude Code에서 Bash로 호출:
+`scripts/create_meeting_doc.py` - Claude Code에서 Bash로 호출:
 
 ```bash
 # 사용법
-python scripts/generate_doc.py --format pdf --input meeting.json --output data/output/
-python scripts/generate_doc.py --format docx --input meeting.json --output data/output/
-python scripts/generate_doc.py --format md --input meeting.json --output data/output/
-python scripts/generate_doc.py --format txt --input meeting.json --output data/output/
-python scripts/generate_doc.py --format all --input meeting.json --output data/output/
+python scripts/create_meeting_doc.py --input meeting.json
+python scripts/create_meeting_doc.py --input meeting.json --share anyone_reader
 ```
 
-- stdin 또는 JSON 파일로 회의록 데이터를 받음
-- 지정된 형식으로 문서 파일 생성
-- 생성된 파일 경로를 stdout으로 출력
+- JSON 파일 또는 stdin으로 회의록 데이터를 받음
+- Google Docs API로 문서 생성 (제목, 본문, 불릿, 테이블 스타일 적용)
+- Google Drive API로 공유 권한 설정
+- 생성된 Google Docs URL을 stdout으로 출력
 
-### 6.3 문서 렌더러
+### 6.3 Google Docs 클라이언트
 
-각 렌더러는 동일한 인터페이스:
+`scripts/google_docs_client.py`:
 
 ```python
-def render(minutes: dict, output_path: Path) -> Path: ...
+class GoogleDocsClient:
+    def __init__(self, credentials_path: str): ...
+    def create_document(self, minutes: dict) -> str:
+        """회의록 데이터로 Google Docs 문서 생성. 문서 URL 반환."""
+    def set_permissions(self, document_id: str, share_mode: str):
+        """문서 공유 권한 설정."""
 ```
 
-- **pdf_renderer.py**: fpdf2 + NanumGothic 폰트, 한글 PDF
-- **docx_renderer.py**: python-docx, 제목/불릿/테이블 스타일
-- **markdown_renderer.py**: `#` 제목, `-` 불릿
-- **txt_renderer.py**: `===` 구분선, 순수 텍스트
+### 6.4 Google Docs 공유 권한 설정
+
+환경변수로 기본 공유 모드 설정 가능:
+
+```env
+GOOGLE_DOCS_SHARE_MODE=anyone_reader
+```
+
+| 설정값 | 동작 |
+|--------|------|
+| `private` | 생성자만 접근 가능 (기본값) |
+| `anyone_reader` | 링크가 있는 모든 사람 읽기 가능 |
+| `anyone_writer` | 링크가 있는 모든 사람 편집 가능 |
+| `anyone_commenter` | 링크가 있는 모든 사람 댓글 가능 |
+
+특정 이메일에 권한을 부여하려면 스크립트 호출 시 `--share-email user@example.com` 옵션 사용.
 
 ---
 
@@ -221,14 +234,17 @@ Claude Code 세션에서 텔레그램 MCP를 통해 메시지를 수신하면:
 - `prompts/meeting_minutes.md` 템플릿에 따라 구조화
 - JSON 형식의 회의록 데이터 생성
 
-### Step 3: 문서 파일 생성
+### Step 3: Google Docs 문서 생성
 - JSON 데이터를 임시 파일로 저장
-- `scripts/generate_doc.py` 호출하여 원하는 형식의 문서 생성
-- 사용자가 형식을 선택하지 않은 경우 모든 형식 생성 또는 기본 PDF 생성
+- `scripts/create_meeting_doc.py` 호출
+- Google Docs API로 문서 생성 (회의록 형식 스타일 적용)
+- Google Drive API로 공유 권한 설정 (기본: `.env`의 `GOOGLE_DOCS_SHARE_MODE`)
+- 생성된 문서 URL 반환
 
 ### Step 4: 텔레그램 응답
-- 생성된 문서 파일을 텔레그램 MCP를 통해 전송
+- Google Docs 링크를 텔레그램 MCP를 통해 전송
 - 요약 미리보기 텍스트도 함께 전송
+- 예: "회의록이 생성되었습니다: https://docs.google.com/document/d/{id}/edit"
 
 ---
 
@@ -238,44 +254,55 @@ Claude Code 세션에서 텔레그램 MCP를 통해 메시지를 수신하면:
 - Claude Code 세션 상시 실행
 - 텔레그램 MCP 플러그인 연동 완료 (이미 설정됨)
 
-### 8.2 Python 의존성
-```bash
-pip install fpdf2 python-docx
-```
+### 8.2 Google Cloud 설정
+1. [Google Cloud Console](https://console.cloud.google.com)에서 프로젝트 생성
+2. **Google Docs API** 및 **Google Drive API** 활성화
+3. **서비스 계정** 생성 후 JSON 키 다운로드
+4. 키 파일을 `credentials/service_account.json`에 배치 (gitignored)
 
-### 8.3 한글 폰트
-- NanumGothic.ttf를 `fonts/` 디렉토리에 배치
+### 8.3 Python 의존성
+```bash
+pip install -r requirements.txt
+```
 
 ---
 
 ## 9. 의존성 (v1)
 
 ```
-fpdf2>=2.8.0           # PDF 생성
-python-docx>=1.1.0     # DOCX 생성
+google-api-python-client>=2.100.0   # Google Docs/Drive API
+google-auth>=2.23.0                 # Google 인증
+python-dotenv>=1.0.0                # 환경변수 관리
 ```
 
-**v2 대비 제거된 의존성**: python-telegram-bot, openai-whisper, httpx, anthropic, openai, google-genai, python-dotenv, pytest, pytest-asyncio
+**v2 대비 제거된 의존성**: python-telegram-bot, openai-whisper, httpx, anthropic, openai, google-genai, fpdf2, python-docx
+**v1에서 추가된 의존성**: google-api-python-client, google-auth
 
 ---
 
 ## 10. 구현 순서 (v1, 4단계)
 
 ### Step 1: 프로젝트 스캐폴딩
-- 디렉토리 구조 생성
+- 디렉토리 구조 생성 (`scripts/`, `prompts/`, `credentials/`)
 - `requirements.txt` 작성
+- `.env.example` 작성 (Google API 설정 포함)
 - 의존성 설치
 
-### Step 2: 문서 생성 스크립트
-- `scripts/renderers/` - PDF/DOCX/MD/TXT 렌더러 구현
-- `scripts/generate_doc.py` - CLI 진입점
-- 한글 폰트 설정 (PDF)
+### Step 2: Google Docs 문서 생성 스크립트
+- `scripts/google_docs_client.py` - Google Docs/Drive API 클라이언트
+  - 서비스 계정 인증
+  - 문서 생성 (제목, 본문, 불릿, 테이블 스타일)
+  - 공유 권한 설정
+- `scripts/create_meeting_doc.py` - CLI 진입점
+  - JSON 입력 → Google Docs 생성 → URL 출력
 
 ### Step 3: 프롬프트 템플릿
 - `prompts/meeting_minutes.md` 작성
 - Claude Code가 참조할 회의록 생성 가이드
 
 ### Step 4: 통합 테스트 및 문서화
+- 샘플 회의록 JSON으로 Google Docs 생성 테스트
+- 공유 링크 접근 확인
 - 실제 음성 파일로 end-to-end 테스트
 - README.md 완성
 
@@ -283,11 +310,11 @@ python-docx>=1.1.0     # DOCX 생성
 
 ## 11. 검증 방법
 
-1. 텔레그램에서 한국어 음성 메모 전송
-2. Claude Code가 MCP로 수신 → 회의록 JSON 생성 확인
-3. `scripts/generate_doc.py` 실행 → PDF/DOCX/MD/TXT 파일 생성 확인
-4. 한글 내용이 모든 형식에서 정상 표시되는지 확인
-5. 텔레그램으로 문서 파일 전송 확인
+1. 샘플 회의록 JSON으로 `scripts/create_meeting_doc.py` 실행 → Google Docs 문서 생성 확인
+2. 생성된 링크 접근 → 회의록 포맷(제목/불릿/테이블) 정상 확인
+3. 공유 권한 설정 동작 확인 (private, anyone_reader 등)
+4. 텔레그램에서 한국어 음성 메모 전송 → Claude Code가 MCP로 수신 → 회의록 JSON 생성 확인
+5. 전체 흐름: 음성 전송 → Google Docs 생성 → 텔레그램으로 링크 수신 확인
 
 ---
 
@@ -297,8 +324,9 @@ python-docx>=1.1.0     # DOCX 생성
 |-----------|----------|
 | 음성 인식 불가 | Claude가 "음성을 인식할 수 없습니다" 텔레그램 응답 |
 | 회의 내용 아님 | 동일 형식으로 구조화 (강의/독백도 처리) |
-| 문서 생성 실패 | 스크립트 에러 → Claude가 텍스트 형태로 회의록 직접 전송 |
-| 한글 폰트 미설치 | PDF 생성 건너뛰고 DOCX/MD/TXT만 생성 |
+| Google API 인증 실패 | "Google API 인증에 실패했습니다" 에러 + 로그 |
+| Google Docs 생성 실패 | Claude가 텍스트 형태로 회의록 직접 텔레그램 전송 (폴백) |
+| 공유 권한 설정 실패 | 문서는 생성되었으나 공유 실패 안내 + 수동 공유 가이드 |
 
 ---
 

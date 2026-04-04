@@ -16,6 +16,9 @@ env/
 # Environment Variables
 .env
 
+# Google API Credentials
+credentials/
+
 # IDE
 .vscode/
 .idea/
