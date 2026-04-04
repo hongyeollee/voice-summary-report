@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual Environment
+venv/
+.venv/
+env/
+
+# Environment Variables
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Runtime Data
+data/audio/*
+data/output/*
+!data/.gitkeep
+!data/audio/.gitkeep
+!data/output/.gitkeep
+
+# macOS
+.DS_Store
+
+# Whisper model cache
+*.pt
+
+# Test
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Claude Code
+.claude/
