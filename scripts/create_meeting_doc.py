@@ -13,6 +13,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -50,9 +51,9 @@ def parse_args():
     return parser.parse_args()
 
 
-def load_minutes(input_path: str | None) -> dict:
+def load_minutes(input_path: Optional[str]) -> dict:
     """JSON 파일 또는 stdin에서 회의록 데이터를 로드한다."""
-    if input_path:
+    if input_path and input_path != "-":
         with open(input_path, "r", encoding="utf-8") as f:
             return json.load(f)
     else:
@@ -62,24 +63,26 @@ def load_minutes(input_path: str | None) -> dict:
 def main():
     args = parse_args()
 
-    credentials_path = (
+    client_secret_path = (
         args.credentials
-        or os.getenv("GOOGLE_CREDENTIALS_PATH", "./credentials/service_account.json")
+        or os.getenv("GOOGLE_CREDENTIALS_PATH", "./credentials/oauth_client.json")
     )
+    token_path = os.getenv("GOOGLE_TOKEN_PATH", "./credentials/token.json")
 
-    if not Path(credentials_path).exists():
+    if not Path(client_secret_path).exists():
         print(
-            f"오류: Google 인증 파일을 찾을 수 없습니다: {credentials_path}",
+            f"오류: OAuth 클라이언트 파일을 찾을 수 없습니다: {client_secret_path}",
             file=sys.stderr,
         )
         print(
-            "credentials/service_account.json을 배치하거나 --credentials 옵션을 사용하세요.",
+            "credentials/oauth_client.json을 배치하거나 --credentials 옵션을 사용하세요.",
             file=sys.stderr,
         )
         sys.exit(1)
 
+    folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
     minutes = load_minutes(args.input)
-    client = GoogleDocsClient(credentials_path)
+    client = GoogleDocsClient(client_secret_path, token_path, folder_id=folder_id)
     url = client.create_document(minutes)
 
     # 공유 권한 설정
